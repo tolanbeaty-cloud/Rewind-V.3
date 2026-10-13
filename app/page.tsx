@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 type PL = { id: string; name: string; total: number | null };
 type T = { uri: string; title: string; artists: string[]; album: string; added: string; local: boolean; img?: string | null };
 type Sort = 'playlist' | 'added' | 'title' | 'artist';
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+type Job = { action: 'remove' | 'restore'; uri: string; id: string; title: string };
 
 export default function Home() {
   const [auth, setAuth] = useState<'loading' | 'no' | 'yes'>('loading');
@@ -19,6 +21,9 @@ export default function Home() {
   const [prog, setProg] = useState<{ done: number; total: number } | null>(null);
   const [swipeOn, setSwipeOn] = useState(false); const [deck, setDeck] = useState<T[]>([]); const [di, setDi] = useState(0);
   const [dx, setDx] = useState(0); const [fly, setFly] = useState<0 | 1 | -1>(0); const drag = useRef<number | null>(null);
+  const jobs = useRef<Job[]>([]); const working = useRef(false); const removedSet = useRef<Set<string>>(new Set<string>());
+  const decided = useRef<Map<string, 'keep' | 'remove'>>(new Map<string, 'keep' | 'remove'>());
+  const [removedN, setRemovedN] = useState(0); const [pending, setPending] = useState(0); const [failed, setFailed] = useState<Job[]>([]);
   const embedEl = useRef<HTMLDivElement>(null); const ctl = useRef<any>(null); const [fallback, setFallback] = useState(false);
   const paint = useRef<boolean | null>(null); const swipe = useRef<{ x: number; pos: number } | null>(null); const swiped = useRef(false);
   useEffect(() => { const up = () => { paint.current = null; };
@@ -69,9 +74,43 @@ export default function Home() {
   // ---- Swipe mode: right = keep, left = mark for removal (removal itself still needs the confirm step)
   function startSwipe(list: T[]) { const seen = new Set<string>();
     setDeck(list.filter(t => !t.local && !seen.has(t.uri) && (seen.add(t.uri), true)));
+    decided.current.clear(); removedSet.current = new Set<string>(); setRemovedN(0); setFailed([]);
     setDi(0); setDx(0); setFly(0); setFallback(false); setPlaying(null); setSwipeOn(true); }
-  function decide(keep: boolean) { const t = deck[di]; if (!t || fly) return; setFly(keep ? 1 : -1);
-    setTimeout(() => { setSel(p => { const n = new Set(p); keep ? n.delete(t.uri) : n.add(t.uri); return n; }); setDi(i => i + 1); setFly(0); setDx(0); }, 180); }
+  // One song at a time: swipe left sends a single remove request right away (queued so requests never overlap).
+  async function drain() {
+    if (working.current) return; working.current = true;
+    while (jobs.current.length) {
+      const job = jobs.current[0]; let ok = false, msg = '';
+      if (job.action === 'restore' && !removedSet.current.has(job.uri)) { jobs.current.shift(); setPending(jobs.current.length); continue; }
+      for (let attempt = 0; attempt < 6 && !ok; attempt++) {
+        try { await api('/api/playlist', { id: job.id, action: job.action, uris: [job.uri] }); ok = true; }
+        catch (e: any) { msg = e.message; if (e.retryAfter !== undefined) await sleep((e.retryAfter || 3) * 1000 + 500); else break; }
+      }
+      jobs.current.shift();
+      if (ok) { if (job.action === 'remove') removedSet.current.add(job.uri); else removedSet.current.delete(job.uri); setRemovedN(removedSet.current.size); }
+      else if (job.action === 'remove') { setFailed(f => [...f, job]); setErr(`Couldn't remove "${job.title}": ${msg}`); }
+      else setErr(`Couldn't put back "${job.title}": ${msg}`);
+      setPending(jobs.current.length);
+    }
+    working.current = false;
+  }
+  function enqueue(job: Job) { jobs.current.push(job); setPending(jobs.current.length); drain(); }
+  function decide(keep: boolean) { const t = deck[di]; if (!t || fly || !pl) return; setFly(keep ? 1 : -1); const id = pl.id;
+    decided.current.set(t.uri, keep ? 'keep' : 'remove');
+    setTimeout(() => { if (!keep) enqueue({ action: 'remove', uri: t.uri, id, title: t.title }); setDi(i => i + 1); setFly(0); setDx(0); }, 180); }
+  function back() { if (di === 0 || fly || !pl) return; const prev = deck[di - 1];
+    if (decided.current.get(prev.uri) === 'remove') {
+      const k = jobs.current.findIndex((j, n) => n > 0 && j.action === 'remove' && j.uri === prev.uri);
+      if (k > 0) { jobs.current.splice(k, 1); setPending(jobs.current.length); }
+      else enqueue({ action: 'restore', uri: prev.uri, id: pl.id, title: prev.title });
+      setFailed(f => f.filter(x => x.uri !== prev.uri));
+    }
+    decided.current.delete(prev.uri); setDi(di - 1); }
+  function retryFailed() { const f = failed; setFailed([]); setErr(''); f.forEach(enqueue); }
+  function leave() {
+    if (pl && removedSet.current.size) { const n = removedSet.current.size; saveUndo({ id: pl.id, name: pl.name, uris: [...removedSet.current] });
+      setPls(ps => ps.map(x => x.id === pl.id && x.total != null ? { ...x, total: x.total - n } : x)); }
+    setSwipeOn(false); setPl(null); setSel(new Set()); }
   useEffect(() => { if (!swipeOn) return;
     const h = (e: KeyboardEvent) => { if (e.key === 'ArrowRight') decide(true); else if (e.key === 'ArrowLeft') decide(false); };
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); });
@@ -121,7 +160,7 @@ export default function Home() {
   async function disconnect() { await fetch('/api/auth/logout', { method: 'POST' }); saveUndo(null); setPl(null); setAuth('no'); }
 
   return <div className="app"><nav><b>Rewind</b>
-    <button className={!pl ? 'on' : ''} onClick={() => { setSwipeOn(false); setPl(null); setSel(new Set()); }}>Playlists</button>
+    <button className={!pl ? 'on' : ''} onClick={leave}>Playlists</button>
     {auth === 'yes' && <button onClick={disconnect}>Disconnect Spotify</button>}</nav>
   <main>
     {err && <div className="err">{err}</div>}
@@ -144,7 +183,7 @@ export default function Home() {
         {prog && <><p className="m">Removing {prog.done} / {prog.total}. Keep this tab open.</p><div className="bar"><i style={{ width: prog.done / (prog.total || 1) * 100 + '%' }} /></div><br /></>}
         <div className="row"><button className="btn" disabled={busy} onClick={remove}>{busy ? 'Removing…' : 'Remove'}</button><button className="btn alt" onClick={() => { setConfirm(false); setSwipeOn(true); }}>Cancel</button></div></div></div>}
       {swipeOn && <div style={{ position: 'fixed', inset: 0, background: '#121212', zIndex: 8, overflowY: 'auto', padding: 16 }}><div style={{ maxWidth: 420, margin: '0 auto' }}>
-        <div className="row" style={{ justifyContent: 'space-between' }}><b>{Math.min(di + 1, deck.length)} / {deck.length}</b><span className="m">Marked for removal: {removable.length}</span>
+        <div className="row" style={{ justifyContent: 'space-between' }}><b>{Math.min(di + 1, deck.length)} / {deck.length}</b><span className="m">Removed: {removedN}{pending > 0 ? ` · saving ${pending}…` : ''}</span>
           <button className="btn alt" style={{ padding: '6px 14px' }} onClick={() => setDi(deck.length)}>Finish</button></div>
         <div className="bar" style={{ margin: '10px 0' }}><i style={{ width: di / (deck.length || 1) * 100 + '%' }} /></div>
         {deck[di] ? <>
@@ -163,16 +202,15 @@ export default function Home() {
             <p className="m">Saved {new Date(deck[di].added).toLocaleDateString()}</p></div>
           <div className="row" style={{ justifyContent: 'center', margin: '16px 0' }}>
             <button className="btn alt" onClick={() => decide(false)}>✕ Remove</button>
-            <button className="btn alt" disabled={di === 0} onClick={() => setDi(i => Math.max(0, i - 1))}>↶ Back</button>
+            <button className="btn alt" disabled={di === 0} onClick={back}>↶ Back</button>
             <button className="btn" onClick={() => decide(true)}>♥ Keep</button></div>
           {fallback ? <iframe key={deck[di].uri} src={`https://open.spotify.com/embed/track/${deck[di].uri.split(':')[2]}`} width="100%" height="80" allow="encrypted-media; autoplay" style={{ border: 0, borderRadius: 12 }} />
             : <div key="embed"><div ref={embedEl} /></div>}
-          <p className="m">Swipe right to keep, left to remove (arrow keys work too). Nothing is deleted until you confirm at the end. Previews start automatically if your browser allows it; otherwise press play.</p>
+          <p className="m">Swipe right to keep, left to remove (arrow keys work too). A left swipe removes the song from your playlist straight away. ↶ Back puts your last removal back (at the end of the playlist). Previews start automatically if your browser allows it; otherwise press play.</p>
         </> : <div className="card" style={{ textAlign: 'center' }}><h2>All done</h2>
-          <p>{removable.length} songs marked for removal. Nothing is removed until you confirm.</p>
-          <div className="row" style={{ justifyContent: 'center' }}>
-            <button className="btn" disabled={!removable.length} onClick={() => { setSwipeOn(false); setConfirm(true); }}>Review and remove {removable.length}</button>
-            <button className="btn alt" onClick={() => { setSwipeOn(false); setPl(null); setSel(new Set()); }}>Back to playlists</button></div></div>}
+          <p>{removedN} songs removed from "{pl.name}".{pending > 0 ? ` Finishing up… ${pending} left.` : ''}</p>
+          {failed.length > 0 && <><p>{failed.length} couldn't be removed: {failed.slice(0, 3).map(f => f.title).join(', ')}{failed.length > 3 ? '…' : ''}</p><button className="btn alt" onClick={retryFailed}>Retry failed</button><br /><br /></>}
+          <button className="btn" disabled={pending > 0} onClick={leave}>Back to playlists</button></div>}
       </div></div>}
     </>}
   </main></div>;
