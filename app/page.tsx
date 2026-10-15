@@ -32,7 +32,7 @@ export default function Home() {
 
   const api = async (url: string, body?: any) => {
     const r = await fetch(url, body ? { method: 'POST', body: JSON.stringify(body) } : undefined);
-    const j = await r.json(); if (!r.ok) { if (r.status === 401) setAuth('no'); const er: any = new Error(j.error); if (r.status === 429) er.retryAfter = j.retryAfter ?? 3; throw er; } return j;
+    const j = await r.json(); if (!r.ok) { if (r.status === 401) setAuth('no'); const er: any = new Error(typeof j.error === 'string' ? j.error : j.error?.message ?? 'Request failed'); if (r.status === 429) er.retryAfter = j.retryAfter ?? 3; throw er; } return j;
   };
   useEffect(() => {
     try { const u = localStorage.getItem('rw-undo'); if (u) setUndo(JSON.parse(u)); } catch {}
@@ -43,7 +43,7 @@ export default function Home() {
   async function open(p: PL) {
     setPl(p); setTracks([]); setSel(new Set()); setLoaded(0); setErr(''); setQ(''); setSort('playlist');
     try { let off = 0, total = 1; const all: T[] = [];
-      while (off < total) { const j = await api(`/api/playlist?id=${p.id}&offset=${off}`); total = j.total; all.push(...j.items); off += j.step; setLoaded(Math.min(off, total)); if (p.total == null) setPl(prev => prev && { ...prev, total: j.total }); }
+      while (off < total) { const j = await api(`/api/playlist?id=${p.id}&offset=${off}`); total = j.total; all.push(...j.items); if (!j.step) break; off += j.step; setLoaded(Math.min(off, total)); if (p.total == null) setPl(prev => prev && { ...prev, total: j.total }); }
       setTracks(all); setLoaded(total); startSwipe(all);
     } catch (e: any) { setErr(e.message); }
   }
@@ -182,31 +182,31 @@ export default function Home() {
         {selectedRows.some(t => (copies.get(t.uri) ?? 0) > 1) && <p>Some songs appear more than once. Spotify removes every copy of a selected song.</p>}
         {prog && <><p className="m">Removing {prog.done} / {prog.total}. Keep this tab open.</p><div className="bar"><i style={{ width: prog.done / (prog.total || 1) * 100 + '%' }} /></div><br /></>}
         <div className="row"><button className="btn" disabled={busy} onClick={remove}>{busy ? 'Removing…' : 'Remove'}</button><button className="btn alt" onClick={() => { setConfirm(false); setSwipeOn(true); }}>Cancel</button></div></div></div>}
-      {swipeOn && <div style={{ position: 'fixed', inset: 0, background: '#121212', zIndex: 8, overflowY: 'auto', padding: 16 }}><div style={{ maxWidth: 420, margin: '0 auto' }}>
+      {swipeOn && <div style={{ position: 'fixed', inset: 0, background: '#121212', zIndex: 8, overflowY: 'auto', padding: 12 }}><div style={{ maxWidth: 420, margin: '0 auto' }}>
         <div className="row" style={{ justifyContent: 'space-between' }}><b>{Math.min(di + 1, deck.length)} / {deck.length}</b><span className="m">Removed: {removedN}{pending > 0 ? ` · saving ${pending}…` : ''}</span>
           <button className="btn alt" style={{ padding: '6px 14px' }} onClick={() => setDi(deck.length)}>Finish</button></div>
         <div className="bar" style={{ margin: '10px 0' }}><i style={{ width: di / (deck.length || 1) * 100 + '%' }} /></div>
         {deck[di] ? <>
+          <div style={{ marginBottom: 10 }}>{fallback ? <iframe key={deck[di].uri} src={`https://open.spotify.com/embed/track/${deck[di].uri.split(':')[2]}`} width="100%" height="80" allow="encrypted-media; autoplay" style={{ border: 0, borderRadius: 12 }} />
+            : <div key="embed"><div ref={embedEl} /></div>}</div>
           <div key={di} onPointerDown={(e: React.PointerEvent<HTMLDivElement>) => { if (fly) return; drag.current = e.clientX; e.currentTarget.setPointerCapture(e.pointerId); }}
             onPointerMove={(e: React.PointerEvent<HTMLDivElement>) => { if (drag.current !== null) setDx(e.clientX - drag.current); }}
             onPointerUp={() => { const d = dx; drag.current = null; if (Math.abs(d) > 110) decide(d > 0); else setDx(0); }}
             onPointerCancel={() => { drag.current = null; setDx(0); }}
-            style={{ background: '#1e1e1e', borderRadius: 20, padding: 16, textAlign: 'center', touchAction: 'none', userSelect: 'none', cursor: 'grab', position: 'relative',
+            style={{ background: '#1e1e1e', borderRadius: 20, padding: 12, textAlign: 'center', touchAction: 'none', userSelect: 'none', cursor: 'grab', position: 'relative',
               transform: fly ? `translateX(${fly * 600}px) rotate(${fly * 30}deg)` : `translateX(${dx}px) rotate(${dx / 15}deg)`, transition: drag.current === null ? 'transform .18s' : 'none' }}>
             <div style={{ position: 'absolute', top: 24, left: 24, color: '#1db954', border: '3px solid #1db954', borderRadius: 8, padding: '2px 10px', fontWeight: 800, opacity: Math.min(1, Math.max(0, dx / 100)) }}>KEEP</div>
             <div style={{ position: 'absolute', top: 24, right: 24, color: '#ff4d4d', border: '3px solid #ff4d4d', borderRadius: 8, padding: '2px 10px', fontWeight: 800, opacity: Math.min(1, Math.max(0, -dx / 100)) }}>REMOVE</div>
-            {deck[di].img ? <img src={deck[di].img!} alt="" draggable={false} style={{ width: '100%', borderRadius: 14, aspectRatio: '1', objectFit: 'cover' }} />
-              : <div style={{ aspectRatio: '1', display: 'grid', placeItems: 'center', fontSize: 64, background: '#333', borderRadius: 14 }}>♪</div>}
-            <h2 style={{ margin: '12px 0 4px' }}>{deck[di].title}</h2>
+            {deck[di].img ? <img src={deck[di].img!} alt="" draggable={false} style={{ width: 'min(100%, 34vh)', display: 'block', margin: '0 auto', borderRadius: 14, aspectRatio: '1', objectFit: 'cover' }} />
+              : <div style={{ width: 'min(100%, 34vh)', margin: '0 auto', aspectRatio: '1', display: 'grid', placeItems: 'center', fontSize: 48, background: '#333', borderRadius: 14 }}>♪</div>}
+            <h2 style={{ margin: '8px 0 2px', fontSize: 20 }}>{deck[di].title}</h2>
             <p className="m" style={{ margin: 0 }}>{deck[di].artists.join(', ')} · {deck[di].album}</p>
-            <p className="m">Saved {new Date(deck[di].added).toLocaleDateString()}</p></div>
-          <div className="row" style={{ justifyContent: 'center', margin: '16px 0' }}>
+            <p className="m" style={{ margin: '4px 0 0' }}>Saved {new Date(deck[di].added).toLocaleDateString()}</p></div>
+          <div className="row" style={{ justifyContent: 'center', margin: '10px 0' }}>
             <button className="btn alt" onClick={() => decide(false)}>✕ Remove</button>
             <button className="btn alt" disabled={di === 0} onClick={back}>↶ Back</button>
             <button className="btn" onClick={() => decide(true)}>♥ Keep</button></div>
-          {fallback ? <iframe key={deck[di].uri} src={`https://open.spotify.com/embed/track/${deck[di].uri.split(':')[2]}`} width="100%" height="80" allow="encrypted-media; autoplay" style={{ border: 0, borderRadius: 12 }} />
-            : <div key="embed"><div ref={embedEl} /></div>}
-          <p className="m">Swipe right to keep, left to remove (arrow keys work too). A left swipe removes the song from your playlist straight away. ↶ Back puts your last removal back (at the end of the playlist). Previews start automatically if your browser allows it; otherwise press play.</p>
+          <p className="m" style={{ fontSize: 13 }}>Swipe right to keep, left to remove it from your playlist right away. ↶ Back puts the last removal back. On iPhone, tap play on the player once; after that, songs should start as you swipe.</p>
         </> : <div className="card" style={{ textAlign: 'center' }}><h2>All done</h2>
           <p>{removedN} songs removed from "{pl.name}".{pending > 0 ? ` Finishing up… ${pending} left.` : ''}</p>
           {failed.length > 0 && <><p>{failed.length} couldn't be removed: {failed.slice(0, 3).map(f => f.title).join(', ')}{failed.length > 3 ? '…' : ''}</p><button className="btn alt" onClick={retryFailed}>Retry failed</button><br /><br /></>}
